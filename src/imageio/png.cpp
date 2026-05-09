@@ -117,17 +117,17 @@ int decode_ascii_hex_to_binary(uint8_t u8[], size_t length)
     bool    valid[256];
     uint8_t value[256];
     for (int i = 0; i < 256; i++) valid[i] = false;
-    for (char i = '0'; i <= '9'; i++)
+    for (int i = '0'; i <= '9'; i++)
     {
         valid[i] = true;
         value[i] = i - '0';
     }
-    for (char i = 'a'; i <= 'f'; i++)
+    for (int i = 'a'; i <= 'f'; i++)
     {
         valid[i] = true;
         value[i] = 10 + i - 'a';
     }
-    for (char i = 'A'; i <= 'F'; i++)
+    for (int i = 'A'; i <= 'F'; i++)
     {
         valid[i] = true;
         value[i] = 10 + i - 'A';

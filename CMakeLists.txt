@@ -629,10 +629,8 @@ endif()
 if(HDRVIEW_ENABLE_LIBPNG)
   CPMAddPackage(
     NAME PNG
-    GITHUB_REPOSITORY pnggroup/libpng
-    GIT_TAG 62954d33fe729566e9d17b78ddaf013896a1f3c5
-    VERSION 1.6.0
-    # URL https://github.com/pnggroup/libpng/archive/refs/tags/v1.6.51.zip
+    VERSION 1.6.41
+    URL https://github.com/pnggroup/libpng/archive/refs/tags/v1.6.51.zip
     OPTIONS "PNG_SHARED OFF"
             "PNG_STATIC ON"
             "PNG_FRAMEWORK OFF"
@@ -661,7 +659,7 @@ endif()
 CPMAddPackage(
   NAME Imath
   VERSION 3.1.9 # we set the minimium version to 3.1.9, but if manually building use a more recent version
-  FIND_PACKAGE_ARGUMENTS "REQUIRED"
+  #FIND_PACKAGE_ARGUMENTS "REQUIRED"
   # the git repo is incredibly large, so we download the archived include directory
   URL https://github.com/AcademySoftwareFoundation/Imath/archive/refs/tags/v3.1.12.zip
   OPTIONS "BUILD_SHARED_LIBS OFF" "IMATH_INSTALL OFF" "IMATH_INSTALL_PKG_CONFIG OFF" "BUILD_TESTING OFF"
@@ -683,8 +681,8 @@ endif()
 
 CPMAddPackage(
   NAME OpenEXR
-  # GITHUB_REPOSITORY AcademySoftwareFoundation/openexr 
-  FIND_PACKAGE_ARGUMENTS "REQUIRED"
+  # GITHUB_REPOSITORY AcademySoftwareFoundation/openexr
+  # FIND_PACKAGE_ARGUMENTS "REQUIRED"
   # NOTE: OpenEXR v3.3.0 broke subsampled channel loading, but it seems to be fixed starting with v3.4
   VERSION 3.1.5 # this is the version available in ubuntu 24.04
   GIT_TAG v3.4.4
@@ -1165,7 +1163,7 @@ if(HDRVIEW_ENABLE_LIBTIFF)
     NAME TIFF
     VERSION 4.5.1 # version in ubuntu 24.04
     GITHUB_REPOSITORY Tom94/libtiff
-    GIT_TAG b6446af165a5a4177eb9a4f6834bb948d4f89d39
+    GIT_TAG 392d93518a813fe407e119aeb8596eb4891f3fd1
     OPTIONS "BUILD_SHARED_LIBS OFF"
             # "HAVE_JPEGTURBO_DUAL_MODE_8_12 TRUE"
             "tiff-tools OFF"
