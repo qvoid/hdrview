@@ -175,26 +175,26 @@ vector<ImagePtr> load_uhdr_image(istream &is, string_view filename, const ImageL
             throw invalid_argument(fmt::format("Error decoding image: {}", status.detail));
     };
 
+    // Read file data into memory (kept alive for multiple decode passes)
+    is.seekg(0, ios::end);
+    size_t file_size = (size_t)is.tellg();
+    is.seekg(0, ios::beg);
+    if (file_size <= 0)
+        throw invalid_argument{fmt::format("File '{}' is empty", filename)};
+
+    unique_ptr<char[]> file_data(new char[file_size]);
+    is.read(reinterpret_cast<char *>(file_data.get()), file_size);
+
+    if ((size_t)is.gcount() != file_size)
+        throw invalid_argument{
+            fmt::format("Failed to read : {} bytes, read : {} bytes", file_size, (size_t)is.gcount())};
+
+    // Decode HDR rendition (base image + gain map applied)
     {
-        // calculate size of stream
-        is.seekg(0, ios::end);
-        size_t size = (size_t)is.tellg();
-        is.seekg(0, ios::beg);
-        if (size <= 0)
-            throw invalid_argument{fmt::format("File '{}' is empty", filename)};
-
-        // allocate memory to store contents of file and read it in
-        unique_ptr<char[]> data(new char[size]);
-        is.read(reinterpret_cast<char *>(data.get()), size);
-
-        if ((size_t)is.gcount() != size)
-            throw invalid_argument{
-                fmt::format("Failed to read : {} bytes, read : {} bytes", size, (size_t)is.gcount())};
-
         uhdr_compressed_image_t compressed_image{
-            data.get(),          /**< Pointer to a block of data to decode */
-            size,                /**< size of the data buffer */
-            size,                /**< maximum size of the data buffer */
+            file_data.get(),     /**< Pointer to a block of data to decode */
+            file_size,           /**< size of the data buffer */
+            file_size,           /**< maximum size of the data buffer */
             UHDR_CG_UNSPECIFIED, /**< Color Gamut */
             UHDR_CT_UNSPECIFIED, /**< Color Transfer */
             UHDR_CR_UNSPECIFIED  /**< Color Range */
@@ -206,7 +206,6 @@ vector<ImagePtr> load_uhdr_image(istream &is, string_view filename, const ImageL
         spdlog::debug("base image: {}x{}", uhdr_dec_get_image_width(decoder.get()),
                       uhdr_dec_get_image_height(decoder.get()));
         throw_if_error(uhdr_decode(decoder.get()));
-        // going out of scope deallocates contents of data
     }
 
     uhdr_raw_image_t *decoded_image = uhdr_get_decoded_image(decoder.get()); // freed by decoder destructor
@@ -377,54 +376,98 @@ vector<ImagePtr> load_uhdr_image(istream &is, string_view filename, const ImageL
     spdlog::debug("Gainmap image: {}x{}; stride: {}; cg: {}; ct: {}; range: {}", gainmap->w, gainmap->h,
                   gainmap->stride[UHDR_PLANE_PACKED], (int)gainmap->cg, (int)gainmap->ct, (int)gainmap->range);
 
-    // if the gainmap is an unexpected size or format, we are done
-    if ((gainmap_size.x > size.x || gainmap_size.y > size.y) ||
-        (gainmap->fmt != UHDR_IMG_FMT_32bppRGBA8888 && gainmap->fmt != UHDR_IMG_FMT_8bppYCbCr400 &&
-         gainmap->fmt != UHDR_IMG_FMT_24bppRGB888))
-        return {image};
-
-    // otherwise, extract the gain map as a separate channel group
-
-    int num_components =
-        gainmap->fmt == UHDR_IMG_FMT_32bppRGBA8888 ? 4 : (gainmap->fmt == UHDR_IMG_FMT_24bppRGB888 ? 3 : 1);
-
-    if (num_components == 1)
-        image->channels.emplace_back("gainmap.Y", size);
-    if (num_components >= 3)
+    // Extract the gain map as a separate channel group if format is valid
+    if (!(gainmap_size.x > size.x || gainmap_size.y > size.y) &&
+        (gainmap->fmt == UHDR_IMG_FMT_32bppRGBA8888 || gainmap->fmt == UHDR_IMG_FMT_8bppYCbCr400 ||
+         gainmap->fmt == UHDR_IMG_FMT_24bppRGB888))
     {
-        image->channels.emplace_back("gainmap.R", size);
-        image->channels.emplace_back("gainmap.G", size);
-        image->channels.emplace_back("gainmap.B", size);
-    }
-    if (num_components == 4)
-        image->channels.emplace_back("gainmap.A", size);
+        int num_components =
+            gainmap->fmt == UHDR_IMG_FMT_32bppRGBA8888 ? 4 : (gainmap->fmt == UHDR_IMG_FMT_24bppRGB888 ? 3 : 1);
 
-    {
-        auto  byte_data = reinterpret_cast<uint8_t *>(gainmap->planes[UHDR_PLANE_PACKED]);
-        int   stride_y  = gainmap->stride[UHDR_PLANE_PACKED] * num_components;
-        Timer timer;
-        for (int c = 0; c < num_components; ++c)
-            image->channels[4 + c].copy_from_interleaved(
-                byte_data, gainmap->w, gainmap->h, num_components, c, [](uint8_t v) { return dequantize_full(v); },
-                stride_y);
-
-        spdlog::debug("Copying gainmap data took: {} seconds.", (timer.elapsed() / 1000.f));
-    }
-
-    // resize the data in the channels if necessary
-    if (gainmap_size.x < size.x && gainmap_size.y < size.y)
-    {
-        int xs = size.x / gainmap_size.x;
-        int ys = size.x / gainmap_size.x;
-        spdlog::debug("Resizing gainmap resolution {}x{} by factor {}x{} to match image resolution {}x{}.",
-                      gainmap_size.x, gainmap_size.y, xs, ys, size.x, size.y);
-        for (int c = 0; c < num_components; ++c)
+        if (num_components == 1)
+            image->channels.emplace_back("gainmap.Y", size);
+        if (num_components >= 3)
         {
-            Array2Df tmp = image->channels[4 + c];
-
-            for (int y = 0; y < size.y; ++y)
-                for (int x = 0; x < size.x; ++x) image->channels[4 + c](x, y) = tmp(x / xs, y / ys);
+            image->channels.emplace_back("gainmap.R", size);
+            image->channels.emplace_back("gainmap.G", size);
+            image->channels.emplace_back("gainmap.B", size);
         }
+        if (num_components == 4)
+            image->channels.emplace_back("gainmap.A", size);
+
+        {
+            auto  byte_data = reinterpret_cast<uint8_t *>(gainmap->planes[UHDR_PLANE_PACKED]);
+            int   stride_y  = gainmap->stride[UHDR_PLANE_PACKED] * num_components;
+            Timer timer;
+            for (int c = 0; c < num_components; ++c)
+                image->channels[4 + c].copy_from_interleaved(
+                    byte_data, gainmap->w, gainmap->h, num_components, c,
+                    [](uint8_t v) { return dequantize_full(v); }, stride_y);
+
+            spdlog::debug("Copying gainmap data took: {} seconds.", (timer.elapsed() / 1000.f));
+        }
+
+        // resize the data in the channels if necessary
+        if (gainmap_size.x < size.x && gainmap_size.y < size.y)
+        {
+            int xs = size.x / gainmap_size.x;
+            int ys = size.x / gainmap_size.x;
+            spdlog::debug("Resizing gainmap resolution {}x{} by factor {}x{} to match image resolution {}x{}.",
+                          gainmap_size.x, gainmap_size.y, xs, ys, size.x, size.y);
+            for (int c = 0; c < num_components; ++c)
+            {
+                Array2Df tmp = image->channels[4 + c];
+
+                for (int y = 0; y < size.y; ++y)
+                    for (int x = 0; x < size.x; ++x) image->channels[4 + c](x, y) = tmp(x / xs, y / ys);
+            }
+        }
+    }
+
+    // Decode SDR baseline image (base image without gain map applied)
+    try
+    {
+        auto sdr_decoder = Decoder{uhdr_create_decoder(), &uhdr_release_decoder};
+
+        uhdr_compressed_image_t sdr_compressed{
+            file_data.get(),
+            file_size,
+            file_size,
+            UHDR_CG_UNSPECIFIED,
+            UHDR_CT_UNSPECIFIED,
+            UHDR_CR_UNSPECIFIED
+        };
+
+        throw_if_error(uhdr_dec_set_image(sdr_decoder.get(), &sdr_compressed));
+        throw_if_error(uhdr_dec_set_out_color_transfer(sdr_decoder.get(), UHDR_CT_LINEAR));
+        throw_if_error(uhdr_dec_set_out_img_format(sdr_decoder.get(), UHDR_IMG_FMT_64bppRGBAHalfFloat));
+        uhdr_dec_set_out_max_display_boost(sdr_decoder.get(), 1.0f);
+        throw_if_error(uhdr_dec_probe(sdr_decoder.get()));
+        throw_if_error(uhdr_decode(sdr_decoder.get()));
+
+        uhdr_raw_image_t *sdr_img = uhdr_get_decoded_image(sdr_decoder.get());
+        if (sdr_img && sdr_img->fmt == UHDR_IMG_FMT_64bppRGBAHalfFloat)
+        {
+            spdlog::debug("SDR baseline image: {}x{}", sdr_img->w, sdr_img->h);
+
+            int baseline_offset = (int)image->channels.size();
+            image->channels.emplace_back("baseline.R", size);
+            image->channels.emplace_back("baseline.G", size);
+            image->channels.emplace_back("baseline.B", size);
+            image->channels.emplace_back("baseline.A", size);
+
+            auto *sdr_half = reinterpret_cast<half *>(sdr_img->planes[UHDR_PLANE_PACKED]);
+            int   stride   = sdr_img->stride[UHDR_PLANE_PACKED] * 4;
+            Timer timer;
+            for (int c = 0; c < 4; ++c)
+                image->channels[baseline_offset + c].copy_from_interleaved(
+                    sdr_half, sdr_img->w, sdr_img->h, 4, c, [](half v) { return (float)v; }, stride);
+            spdlog::debug("Copying SDR baseline data took: {} seconds.", (timer.elapsed() / 1000.f));
+        }
+    }
+    catch (const std::exception &e)
+    {
+        spdlog::debug("SDR baseline decode failed, skipping: {}", e.what());
     }
 
     return {image};
